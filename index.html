@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kanban</title>
+<style>
+:root{
+  --bg:#f4f5f7;--col:#fff;--task:#fff;--text:#172b4d;--muted:#6b778c;--accent:#4c9aff
+}
+body.dark{
+  --bg:#1e1f22;--col:#2b2d31;--task:#313338;--text:#e5e7eb;--muted:#9ca3af
+}
+body{margin:0;font-family:system-ui;background:var(--bg);color:var(--text);}
+header{display:flex;gap:8px;align-items:center;padding:10px;background:var(--col);}
+select,input,button{padding:6px;border-radius:6px;border:1px solid #ccc;background:var(--task);color:inherit;}
+button{cursor:pointer;}
+#board{display:flex;gap:16px;padding:16px;overflow-x:auto;}
+.column{min-width:280px;background:var(--col);border-radius:10px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.15);}
+.column h3{margin:0 0 8px;}
+.task{background:var(--task);padding:6px;border-radius:6px;margin-bottom:6px;cursor:grab;}
+.task.hidden{display:none;}
+.lane{font-size:12px;color:var(--muted);margin:6px 0;}
+.tag{font-size:11px;color:var(--accent);margin-right:4px;}
+</style>
+</head>
+<body>
+
+<header>
+  <select id="boardSelect"></select>
+  <button onclick="newBoard()">＋Board</button>
+  <input id="search" placeholder="Search">
+  <input id="tagFilter" placeholder="#tag">
+  <button onclick="toggleTheme()">🌙</button>
+  <button onclick="undo()">↶</button>
+  <button onclick="redo()">↷</button>
+  <button onclick="exportJSON()">⬇</button>
+  <label>⬆<input type="file" hidden onchange="importJSON(event)"></label>
+</header>
+
+<div id="board"></div>
+
+<script>
+let db;
+let boards={}, activeBoard=null;
+let undoStack=[], redoStack=[], MAX_HISTORY=50;
+
+function openDB(){
+  return new Promise(res=>{
+    const request=indexedDB.open("kanban-db",1);
+    request.onupgradeneeded=e=>{
+      const d=e.target.result;
+      if(!d.objectStoreNames.contains("boards")) d.createObjectStore("boards",{keyPath:"id"});
+    };
+    request.onsuccess=e=>res(e.target.result);
+  });
+}
+
+async function initDB(){
+  db=await openDB();
+  const tx=db.transaction("boards","readonly").objectStore("boards");
+  tx.getAll().onsuccess=e=>{
+    e.target.result.forEach(b=>boards[b.id]=b);
+    if(!Object.keys(boards).length) newBoard();
+    else { activeBoard=Object.keys(boards)[0]; render(); }
+  };
+}
+
+function saveBoards(){
+  const tx=db.transaction("boards","readwrite").objectStore("boards");
+  Object.values(boards).forEach(b=>tx.put(b));
+}
+
+function snapshot(){
+  undoStack.push(JSON.stringify(boards));
+  if(undoStack.length>MAX_HISTORY) undoStack.shift();
+  redoStack=[];
+}
+
+function undo(){if(!undoStack.length) return; redoStack.push(JSON.stringify(boards)); boards=JSON.parse(undoStack.pop()); saveBoards(); render();}
+function redo(){if(!redoStack.length) return; undoStack.push(JSON.stringify(boards)); boards=JSON.parse(redoStack.pop()); saveBoards(); render();}
+
+function newBoard(){
+  const id="b"+Date.now();
+  boards[id]={id,title:"Board",columns:{backlog:{title:"Backlog",tasks:[]},todo:{title:"To Do",tasks:[]},doing:{title:"Doing",tasks:[]},done:{title:"Done",tasks:[]}}};
+  activeBoard=id;
+  snapshot(); saveBoards(); render();
+}
+
+function toggleTheme(){document.body.classList.toggle("dark");}
+
+function parseTask(text){const tags=text.match(/#\w+/g)?.map(t=>t.slice(1))||[];return{id:Date.now(),text,tags,lane:"Default"};}
+function md(t){return t.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/\*(.+?)\*/g,"<i>$1</i>").replace(/`(.+?)`/g,"<code>$1</code>").replace(/\n/g,"<br>");}
+
+const boardEl=document.getElementById("board");
+const boardSelect=document.getElementById("boardSelect");
+const search=document.getElementById("search");
+const tagFilter=document.getElementById("tagFilter");
+
+function render(){
+  boardEl.innerHTML="";
+  boardSelect.innerHTML="";
+  Object.values(boards).forEach(b=>{
+    const o=document.createElement("option"); o.value=b.id; o.textContent=b.title; if(b.id===activeBoard)o.selected=true; boardSelect.appendChild(o);
+  });
+  if(!activeBoard) return;
+  const b=boards[activeBoard];
+  Object.entries(b.columns).forEach(([cid,col])=>{
+    const c=document.createElement("div"); c.className="column";
+    c.innerHTML=`<h3>${col.title}</h3><input placeholder="Task #tag">`;
+    const inp=c.querySelector("input");
+    inp.onkeydown=e=>{
+      if(e.key==="Enter" && inp.value){snapshot(); col.tasks.push(parseTask(inp.value)); inp.value=""; saveBoards(); render();}
+    };
+    const lanes=[...new Set(col.tasks.map(t=>t.lane))];
+    lanes.forEach(l=>{
+      const ln=document.createElement("div"); ln.className="lane"; ln.textContent=l; c.appendChild(ln);
+      col.tasks.filter(t=>t.lane===l).forEach(t=>{
+        const el=document.createElement("div"); el.className="task"; el.innerHTML=md(t.text)+"<div>"+t.tags.map(x=>`<span class=tag>#${x}</span>`).join("")+"</div>";
+        el.draggable=true;
+        el.ondblclick=()=>{snapshot(); col.tasks=col.tasks.filter(x=>x.id!==t.id); saveBoards(); render();}
+        el.ondragstart=e=>{e.dataTransfer.setData("id",t.id); e.dataTransfer.setData("from",cid);}
+        c.appendChild(el);
+      });
+    });
+    c.ondragover=e=>e.preventDefault();
+    c.ondrop=e=>{
+      const id=+e.dataTransfer.getData("id"); const from=e.dataTransfer.getData("from"); if(!from)return;
+      snapshot(); const src=b.columns[from].tasks; const i=src.findIndex(t=>t.id===id); const [t]=src.splice(i,1); col.tasks.push(t); saveBoards(); render();
+    };
+    boardEl.appendChild(c);
+  });
+  applyFilters();
+}
+
+function applyFilters(){
+  const q=search.value.toLowerCase(); const tag=tagFilter.value.replace("#","");
+  document.querySelectorAll(".task").forEach(el=>{
+    const txt=el.textContent.toLowerCase(); const okTxt=!q||txt.includes(q); const okTag=!tag||txt.includes("#"+tag);
+    el.classList.toggle("hidden",!(okTxt&&okTag));
+  });
+}
+
+boardSelect.onchange=e=>{activeBoard=e.target.value; render();}
+search.oninput=tagFilter.oninput=applyFilters;
+
+function exportJSON(){const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(boards,null,2)])); a.download="kanban.json"; a.click();}
+function importJSON(e){const r=new FileReader(); r.onload=()=>{boards=JSON.parse(r.result); saveBoards(); render();}; r.readAsText(e.target.files[0]);}
+
+document.addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="z") undo(); if(e.ctrlKey&&e.key==="y") redo();});
+
+(async()=>{db=await openDB(); const tx=db.transaction("boards","readonly").objectStore("boards"); tx.getAll().onsuccess=e=>{ e.target.result.forEach(b=>boards[b.id]=b); if(!Object.keys(boards).length)newBoard(); else {activeBoard=Object.keys(boards)[0]; render();} };})();
+
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register(URL.createObjectURL(new Blob([`
+self.addEventListener("fetch",e=>{
+  e.respondWith(caches.open("kanban").then(c=>c.match(e.request)||fetch(e.request)));
+});
+`])));
+}
+</script>
+</body>
+</html>
