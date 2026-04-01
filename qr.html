@@ -55,7 +55,6 @@ button.secondary:hover { border-color: var(--accent); color: var(--text); }
 <body>
 <main>
   <h1>QR-код из ссылки</h1>
-  <p class="sub">Вставьте URL или любой текст — код строится полностью в браузере, без серверов и API.</p>
   <label for="url">Текст или ссылка</label>
   <textarea id="url" placeholder="https://example.com/page" spellcheck="false"></textarea>
   <div class="row">
@@ -63,7 +62,6 @@ button.secondary:hover { border-color: var(--accent); color: var(--text); }
     <button type="button" id="clr" class="secondary">Очистить</button>
   </div>
   <div id="out" aria-live="polite"></div>
-  <p class="hint">Работает офлайн после открытия файла. Данные никуда не отправляются.</p>
 </main>
 <script>
 /**
